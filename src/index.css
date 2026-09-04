@@ -1,0 +1,31 @@
+:root {
+  --text: #402a1c;
+  --muted: #8a6f56;
+  --bg: #ffe9c9;
+  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
+
+  font: 16px/1.4 var(--sans);
+  color: var(--text);
+  background: radial-gradient(circle at 15% 10%, #ffd8e0 0%, transparent 45%),
+    radial-gradient(circle at 85% 0%, #d6f5d0 0%, transparent 40%), var(--bg);
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  display: flex;
+}
+
+#root {
+  width: 100%;
+  margin: 0 auto;
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

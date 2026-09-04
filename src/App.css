@@ -1,0 +1,615 @@
+/* Bright fruit-stand palette, pushed into a chunky pixel-art UI style -
+   scoped to .game (the page background itself is set globally in
+   index.css since this app IS the whole page). */
+.game {
+  --panel: #fff6e6;
+  --panel-hover: #fff1d6;
+  --ink: #402a1c;
+  --line: #a8703c;
+  --text: #402a1c;
+  --muted: #8a6f56;
+  --accent: #ff5b6e;
+  --accent-dark: #e13b52;
+  --leaf: #3fae57;
+  --shadow: rgba(64, 42, 28, 0.28);
+  --board-bg: #f5e2c2;
+  --pixel-font: 'Press Start 2P', 'Courier New', monospace;
+  color-scheme: light;
+
+  display: grid;
+  grid-template-columns: 116px auto minmax(230px, 280px);
+  align-items: start;
+  gap: 16px;
+  max-width: 960px;
+  color: var(--text);
+  text-align: left;
+  image-rendering: pixelated;
+}
+
+/* Reusable chunky pixel-panel look: solid dark outline, a hard offset
+   shadow instead of a soft blur, small square corners instead of rounded
+   ones, and a bevel highlight along the top/left edge. */
+.pixel-panel {
+  border: 3px solid var(--ink);
+  border-radius: 4px;
+  box-shadow: 4px 4px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+.top-bar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.top-bar h1 {
+  margin: 0;
+  font-family: var(--pixel-font);
+  font-size: 14px;
+  line-height: 1.4;
+  letter-spacing: -0.5px;
+  color: var(--accent-dark);
+  text-shadow: 2px 2px 0 rgba(64, 42, 28, 0.18);
+}
+
+.top-bar p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.panel-title {
+  margin: 0 0 8px;
+  font-family: var(--pixel-font);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--accent-dark);
+  text-align: center;
+}
+
+.restart {
+  border: 3px solid var(--ink);
+  border-radius: 4px;
+  background: var(--accent);
+  color: #fff;
+  padding: 8px 10px;
+  font-family: var(--pixel-font);
+  font-size: 9px;
+  cursor: pointer;
+  box-shadow: 3px 3px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
+  transition: transform 0.08s steps(2), box-shadow 0.08s steps(2);
+}
+
+.restart:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.restart:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+/* Right-hand game panel: level info, progress, holding, queue. The board
+   itself stays the visually dominant element in the center. */
+/* Fixed height (set inline from Game.jsx, matched to the board) so the
+   panel never resizes or jumps as the queue empties or Holding fills -
+   only .queue-columns scrolls internally when its content overflows. */
+.side-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--panel);
+  padding: 12px;
+  overflow: hidden;
+}
+
+/* Every fixed-size row in the panel (everything except the queue) keeps
+   its natural size - only .queue-lane is allowed to grow/shrink to fill
+   (and internally scroll within) whatever space is left over. */
+.side-panel > .top-bar,
+.side-panel > .progress-card,
+.side-panel > .status-row,
+.side-panel > .lane:not(.queue-lane) {
+  flex-shrink: 0;
+}
+
+.progress-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Chunky segmented progress bar: a repeating hard-edged gradient carves
+   the fill into blocky ticks instead of a smooth gradient. */
+.progress-track {
+  flex: 1;
+  height: 14px;
+  border: 3px solid var(--ink);
+  border-radius: 3px;
+  background: #ffe6c2;
+  box-shadow: inset 2px 2px 0 rgba(64, 42, 28, 0.18);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: repeating-linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.14) 0 3px,
+      transparent 3px 9px
+    ),
+    linear-gradient(180deg, #8ee89a 0%, var(--leaf) 55%, #2f8f4a 100%);
+}
+
+.progress-label {
+  font-family: var(--pixel-font);
+  font-size: 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.board-wrap {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 16px;
+  background: var(--board-bg);
+  border: 3px solid var(--ink);
+  border-radius: 4px;
+  box-shadow: 5px 5px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
+}
+
+.conveyor-stage {
+  position: relative;
+}
+
+/* The conveyor belt: four bands tracing the rectangular loop, each with a
+   diagonal repeating stripe that scrolls to feel like a moving belt
+   surface. Direction matches which way pigs actually travel on that side. */
+.belt-band {
+  position: absolute;
+  z-index: 0;
+  border-radius: 2px;
+  background-color: #e7b061;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(74, 34, 14, 0.24) 0 5px,
+    rgba(74, 34, 14, 0) 5px 10px
+  );
+  background-size: 20px 20px;
+  box-shadow: inset 0 0 0 2px rgba(74, 34, 14, 0.4);
+}
+
+.belt-band.horizontal {
+  animation: belt-scroll-x 0.9s steps(10) infinite;
+}
+
+.belt-band.vertical {
+  animation: belt-scroll-y 0.9s steps(10) infinite;
+}
+
+.belt-band.belt-reverse {
+  animation-direction: reverse;
+}
+
+@keyframes belt-scroll-x {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 20px 0;
+  }
+}
+
+@keyframes belt-scroll-y {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 20px;
+  }
+}
+
+.pixel-grid {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  gap: 1px;
+}
+
+.pixel {
+  width: 7px;
+  height: 7px;
+  border-radius: 0;
+}
+
+.pixel.empty {
+  background: #f4dcb3;
+  transform: scale(0.86);
+  opacity: 0.55;
+  animation: pixel-pop 0.3s steps(4) 1;
+}
+
+/* A little "pop" the instant a pixel is actually removed (when its
+   projectile lands), rather than a plain fade. */
+@keyframes pixel-pop {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  40% {
+    transform: scale(1.5);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.86);
+    opacity: 0.55;
+  }
+}
+
+/* Shooters (pigs). Kept simple and blocky to read clearly at small sizes,
+   with a bright color fill plus tiny ears/face/ammo badge for character. */
+.unit,
+.conveyor-unit {
+  --pig-size: 22px;
+  width: var(--pig-size);
+  height: var(--pig-size);
+  border: 2px solid var(--ink);
+  border-radius: 3px;
+  position: relative;
+  cursor: pointer;
+  box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.16), inset 2px 2px 0 rgba(255, 255, 255, 0.35),
+    2px 2px 0 var(--shadow);
+}
+
+.unit:disabled {
+  cursor: default;
+}
+
+/* A queued pig that isn't the top of its column: visible, but clearly
+   unavailable until it becomes the top. */
+.unit.locked {
+  opacity: 0.42;
+  filter: grayscale(0.35);
+  box-shadow: none;
+}
+
+.unit-ear {
+  position: absolute;
+  top: -4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  background: inherit;
+  filter: brightness(0.9);
+}
+
+.unit-ear-l {
+  left: 2px;
+}
+
+.unit-ear-r {
+  right: 2px;
+}
+
+.unit-face {
+  position: absolute;
+  inset: 40% 20% auto;
+  height: 5px;
+  background: radial-gradient(circle at 4px 2.5px, #1a1a1a 1.6px, transparent 1.7px),
+    radial-gradient(circle at calc(100% - 4px) 2.5px, #1a1a1a 1.6px, transparent 1.7px);
+}
+
+.unit-ammo {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  border: 2px solid var(--ink);
+  border-radius: 2px;
+  background: #2a1a12;
+  color: #fff;
+  font-family: var(--pixel-font);
+  font-size: 7px;
+  line-height: 13px;
+  text-align: center;
+}
+
+.unit:hover:not(:disabled) {
+  transform: translateY(-2px) scale(1.05);
+}
+
+.unit {
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+/* Shooters on the belt: positioned by offset-path/offset-distance, moved
+   at a constant speed (see Game.jsx, which sets transition-duration per
+   move from real travelled distance) - so only the property/easing are
+   fixed here, never a fixed duration that would make corners look faster
+   or slower than straight sections. A playful bounce-in plays the moment
+   a pig appears, plus a gentle idle wobble while travelling. */
+.conveyor-unit {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  offset-rotate: 0deg;
+  offset-anchor: 50% 50%;
+  transition-property: offset-distance;
+  transition-timing-function: linear;
+  animation: unit-bounce-in 0.28s cubic-bezier(0.34, 1.56, 0.64, 1), unit-wobble 0.6s ease-in-out 0.28s infinite;
+}
+
+@keyframes unit-bounce-in {
+  0% {
+    transform: scale(0.2);
+  }
+  70% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes unit-wobble {
+  50% {
+    transform: rotate(-4deg) scale(1.03);
+  }
+}
+
+/* Small bounce for a pig that successfully finishes a lap and settles
+   into a Holding slot. */
+.hold-slot .unit {
+  animation: unit-bounce-in 0.28s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+/* Projectile: a small dot that visibly flies from the shooter's current
+   belt position to its target pixel - never a static line. */
+/* Always the topmost thing on the board - never hidden behind pixel
+   tiles, the belt, or a shooter. */
+.projectile {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 50;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.85), 0 0 4px 1px rgba(255, 210, 63, 0.6),
+    0 1px 2px rgba(0, 0, 0, 0.25);
+  transform: translate(-50%, -50%);
+  animation: projectile-fly var(--flight-ms, 200ms) cubic-bezier(0.3, 0.6, 0.35, 1) forwards;
+}
+
+@keyframes projectile-fly {
+  from {
+    left: var(--from-x);
+    top: var(--from-y);
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  80% {
+    opacity: 1;
+  }
+  to {
+    left: var(--to-x);
+    top: var(--to-y);
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.5);
+  }
+}
+
+.lane h2 {
+  margin: 0 0 6px;
+  font-family: var(--pixel-font);
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+
+/* Compact status readout - "Active X/5" and "Holding Y/5" side by side,
+   scannable at a glance without a full list section. */
+.status-row {
+  display: flex;
+  gap: 8px;
+}
+
+.status-chip {
+  flex: 1;
+  text-align: center;
+  padding: 5px 6px;
+  border: 2px solid var(--ink);
+  border-radius: 3px;
+  background: var(--bg, #ffe9c9);
+  font-family: var(--pixel-font);
+  font-size: 8px;
+  color: var(--muted);
+  box-shadow: 2px 2px 0 var(--shadow);
+}
+
+/* Danger/warning state: Holding is full (5/5). This is a warning only -
+   gameplay keeps going and Holding pigs stay clickable - Game Over only
+   actually triggers separately, if a 6th pig then needs a slot. */
+.status-chip.danger {
+  background: #ffe0e0;
+  border-color: #c81f3d;
+  color: #c81f3d;
+}
+
+.holding {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 5px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.holding.danger {
+  border-color: #c81f3d;
+  background: #fff0f0;
+  animation: holding-pulse 1s steps(2) infinite;
+}
+
+@keyframes holding-pulse {
+  50% {
+    border-color: #ff5b6e;
+  }
+}
+
+.hold-slot {
+  width: 32px;
+  height: 32px;
+  border: 2px dashed var(--line);
+  border-radius: 3px;
+  display: grid;
+  place-items: center;
+  background: #fffaf0;
+}
+
+/* Queue: 3 vertical stacks. Only the top pig of each stack is enabled -
+   the rest are visible but locked, and shift up as the top is used. */
+.queue-lane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.queue-columns {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  align-content: start;
+  gap: 6px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.queue-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+}
+
+/* ---- Left-side map selector ---- */
+
+.map-selector {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  padding: 10px 8px;
+  overflow: hidden;
+}
+
+.map-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding: 2px;
+}
+
+/* Every map is always clickable - grayscale (see .map-thumb-uncleared)
+   means "not cleared yet", never "locked". There is no disabled/reduced-
+   opacity state here on purpose. */
+.map-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 4px;
+  border: 3px solid var(--ink);
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 var(--shadow);
+  transition: transform 0.08s steps(2), box-shadow 0.08s steps(2);
+}
+
+.map-tile:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
+/* The clearly-visible pixel-art frame around the currently selected map. */
+.map-tile-selected {
+  border-color: #ffd23f;
+  box-shadow: 0 0 0 2px var(--ink), 0 0 0 4px #ffd23f, 3px 3px 0 var(--shadow);
+}
+
+.map-thumb {
+  image-rendering: pixelated;
+  border: 2px solid var(--ink);
+  background: var(--board-bg);
+}
+
+/* Not-yet-cleared maps show as grayscale - purely informational, never
+   disabled. Selecting/playing a grayscale map works exactly the same as
+   a full-color one. */
+.map-thumb-uncleared {
+  filter: grayscale(1) brightness(0.95);
+}
+
+.map-tile-name {
+  font-family: var(--pixel-font);
+  font-size: 7px;
+  color: var(--text);
+  text-align: center;
+  line-height: 1.4;
+}
+
+.map-tile-badge {
+  font-family: var(--pixel-font);
+  font-size: 6px;
+  color: #fff;
+  background: var(--leaf);
+  border: 1px solid var(--ink);
+  border-radius: 2px;
+  padding: 2px 4px;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  background: rgba(64, 34, 20, 0.55);
+}
+
+.overlay-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 28px 34px;
+  background: var(--panel, #fff);
+  border: 4px solid var(--ink);
+  border-radius: 4px;
+  box-shadow: 6px 6px 0 var(--shadow, rgba(0, 0, 0, 0.3)), inset 2px 2px 0 rgba(255, 255, 255, 0.5);
+}
+
+.overlay-card h2 {
+  margin: 0;
+  font-family: var(--pixel-font);
+  font-size: 20px;
+  line-height: 1.5;
+  color: var(--accent-dark, #e13b52);
+  text-shadow: 2px 2px 0 rgba(64, 42, 28, 0.2);
+}
