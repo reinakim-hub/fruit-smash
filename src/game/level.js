@@ -1,9 +1,13 @@
-// Every level's pixel art and its matching pig queue are generated below
-// rather than hand-typed, so the art and the queue always stay
-// mathematically balanced with each other, for every fruit map. All maps
-// share one board size and one generation pipeline (mask -> trim -> paint
-// -> round -> queue) - only each fruit's silhouette mask and color palette
-// differ.
+// Every level's pixel art and its matching pig queue stay mathematically
+// balanced with each other. Most maps are generated in code (mask -> trim
+// -> paint -> round -> queue) - only each fruit's silhouette mask and
+// color palette differ. Strawberry is the exception: a static, hand-authored
+// tile map (src/game/strawberry_static_map.js) whose color counts are
+// already exact multiples of ten, so it only needs the shared queue step.
+
+import { buildStrawberryStaticGrid, STRAWBERRY_STATIC_PALETTE } from './strawberry_static_map'
+import { buildWatermelonStaticGrid, WATERMELON_STATIC_PALETTE } from './watermelon_static_map'
+import { BREAKABLE_BG_KEYS, BREAKABLE_BG_PALETTES, fillBreakableBackground } from './breakableYellowBackground'
 
 export const HOLDING_CAPACITY = 5
 export const ACTIVE_CAPACITY = 5
@@ -17,20 +21,20 @@ export const QUEUE_COLUMNS = 3
 // disappears right as its dot actually arrives - never before, never after.
 export const PROJECTILE_MS = 200
 // Target time (ms) for a shooter to travel one full lap of the conveyor -
-// about 3 seconds. Movement runs on its own clock, sized from this and the
+// about 4.5 seconds. Movement runs on its own clock, sized from this and the
 // actual number of conveyor steps (see Game.jsx), so conveyor speed is
 // never tied to shooting speed.
-export const CONVEYOR_LOOP_MS = 3000
+export const CONVEYOR_LOOP_MS = 4500
 
 // Conveyor layout, in pixels. CELL/GAP must match the .pixel-grid CSS.
 // Kept small so the whole game - map selector, board, belt, and side panel
 // - fits one desktop viewport without scrolling. Every fruit map shares
 // this exact board size, so switching maps never resizes the layout.
-export const CELL_SIZE = 7
+export const CELL_SIZE = 9
 export const CELL_GAP = 1
 // Gap between the belt and the board - still enough room for a fired
 // projectile's flight to read clearly, just scaled down with the board.
-export const CONVEYOR_MARGIN = 26
+export const CONVEYOR_MARGIN = 32
 
 export const ROWS = 34
 export const COLS = 36
@@ -158,93 +162,108 @@ function splitIntoTensChunks(total) {
   return chunks.map((n) => n * 10)
 }
 
-// Builds the pig queue straight from the grid's color counts, then
-// interleaves colors round-robin so the queue isn't one long run per color.
+// Builds the pig queue straight from the grid's color counts, as a weighted
+// shuffle rather than a strict sort: every chunk gets a random key, but
+// breakable-background colors (BREAKABLE_BG_KEYS) draw from a lower range
+// than fruit colors, so background shooters tend to land nearer the top of
+// the 3 queue columns (see buildQueueColumns in logic.js, which splits this
+// flat list into columns by position) while fruit shooters can still surface
+// anywhere - including early - since the two ranges deliberately overlap
+// instead of partitioning cleanly. This only ever reorders chunks; it never
+// changes a color's own chunk sizes or total, so ammo balance (and by
+// construction, solvability - see validateLevelDev in logic.js) is
+// unaffected by the shuffle.
 function buildQueue(grid) {
   const counts = countByColor(grid)
-  const perColor = Object.entries(counts).map(([color, total]) => ({
-    color,
-    chunks: splitIntoTensChunks(total),
-  }))
-
-  const queue = []
-  let remaining = true
-  while (remaining) {
-    remaining = false
-    for (const entry of perColor) {
-      const ammo = entry.chunks.shift()
-      if (ammo !== undefined) {
-        queue.push({ color: entry.color, ammo })
-        remaining = true
-      }
+  const chunks = []
+  for (const [color, total] of Object.entries(counts)) {
+    const isBackground = BREAKABLE_BG_KEYS.includes(color)
+    for (const ammo of splitIntoTensChunks(total)) {
+      const key = isBackground ? Math.random() * 0.65 : 0.35 + Math.random() * 0.65
+      chunks.push({ color, ammo, key })
     }
   }
-  return queue
+  chunks.sort((a, b) => a.key - b.key)
+  return chunks.map(({ color, ammo }) => ({ color, ammo }))
+}
+
+// fillBreakableBackground's own balancing (see breakableYellowBackground.js)
+// only ever forwards a band's leftover to the NEXT band, so it can
+// perfectly round bands 1-4 to tens but never the last one (bg5) - the
+// board's total cell count (34x36 = 1224) simply isn't itself a multiple of
+// ten, so no split of exact-ten color buckets can ever sum to it. ROWS/COLS
+// are shared with the Strawberry/Watermelon static maps (whose
+// hand-authored grids are a fixed 34x36) and with the single shared
+// conveyor path every level uses, so resizing them here isn't safe - and
+// folding the leftover into bg4 would just knock that band (already exact)
+// back off a multiple of ten instead. So the handful of leftover cells,
+// always exactly `total % 10` since every other color here is already
+// forced to an exact ten, are trimmed to null - the darkest band's
+// least-noticeable (lowest-diagonal-progress) corner cells - rather than
+// reassigned, so they can't unbalance a neighboring band that's already
+// correct.
+function balanceLastBackgroundBand(grid) {
+  const last = BREAKABLE_BG_KEYS[BREAKABLE_BG_KEYS.length - 1]
+  const leftover = (countByColor(grid)[last] || 0) % 10
+  if (leftover === 0) return grid
+
+  const maxDiag = Math.max(1, grid.length + grid[0].length - 2)
+  const candidates = []
+  for (let row = 0; row < grid.length; row += 1) {
+    for (let col = 0; col < grid[row].length; col += 1) {
+      if (grid[row][col] === last) candidates.push({ row, col, progress: (row + col) / maxDiag })
+    }
+  }
+  candidates.sort((a, b) => a.progress - b.progress)
+  for (let n = 0; n < leftover; n += 1) {
+    grid[candidates[n].row][candidates[n].col] = null
+  }
+  return grid
 }
 
 function buildLevel({ id, name, buildMask, lightRow, lightCol, maxHalfWidth, seedTest, palette }) {
   const mask = trimToMultipleOfTen(buildMask())
-  const grid = roundColorCountsToTens(paintFruitMask(mask, { lightRow, lightCol, maxHalfWidth, seedTest }), 'body')
-  return { id, name, rows: ROWS, cols: COLS, grid, queue: buildQueue(grid), colors: palette }
-}
-
-// ---- Strawberry: rounded teardrop body + 5-leaf crown ----
-
-const STRAWBERRY_TOP = 6
-const STRAWBERRY_BOTTOM = 33
-const STRAWBERRY_MAX_HALF_WIDTH = 15.2
-
-function strawberryHalfWidth(row) {
-  const t = (row - STRAWBERRY_TOP) / (STRAWBERRY_BOTTOM - STRAWBERRY_TOP)
-  if (t < 0 || t > 1) return -1
-  const taper = Math.sin(Math.PI * (1 - t) ** 0.78 * 0.5)
-  const roundedTop = Math.min(1, (row - STRAWBERRY_TOP + 1) / 5.2)
-  return STRAWBERRY_MAX_HALF_WIDTH * taper * roundedTop
-}
-
-function strawberryIsAccent(row, col) {
-  if (row < 0 || row > 8) return false
-  if (row >= 6) return Math.abs(col - CX) <= 13
-  for (const leafCenter of [-13, -6.5, 0, 6.5, 13]) {
-    const halfWidth = row * 0.42 + 0.2
-    if (Math.abs(col - (CX + leafCenter)) <= halfWidth) return true
+  const fruitGrid = roundColorCountsToTens(paintFruitMask(mask, { lightRow, lightCol, maxHalfWidth, seedTest }), 'body')
+  const grid = balanceLastBackgroundBand(fillBreakableBackground(fruitGrid))
+  return {
+    id,
+    name,
+    rows: ROWS,
+    cols: COLS,
+    grid,
+    queue: buildQueue(grid),
+    colors: { ...palette, ...BREAKABLE_BG_PALETTES[id] },
   }
-  return false
 }
 
-function buildStrawberryMask() {
-  const mask = []
-  for (let row = 0; row < ROWS; row += 1) {
-    const line = []
-    for (let col = 0; col < COLS; col += 1) {
-      const inBody = Math.abs(col - CX) <= strawberryHalfWidth(row)
-      line.push(inBody ? 'body' : strawberryIsAccent(row, col) ? 'accent' : null)
-    }
-    mask.push(line)
+// ---- Strawberry & Watermelon: static, hand-authored tile maps ----
+// Unlike every procedural fruit, these grids aren't generated from a
+// formula - they're imported as-is from their own *_static_map.js files (no
+// paintFruitMask/mask-trim step), since their fruit color counts are
+// already exact multiples of ten. Their background cells arrive as plain
+// null though, so they still run through the exact same shared
+// fillBreakableBackground/balanceLastBackgroundBand pipeline every
+// procedural fruit uses - just with each map's own themed 5-color gradient
+// (BREAKABLE_BG_PALETTES[id]) instead of a formula-driven body color.
+function buildStaticLevel({ id, name, grid: fruitGrid, palette }) {
+  const grid = balanceLastBackgroundBand(fillBreakableBackground(fruitGrid))
+  return {
+    id,
+    name,
+    rows: ROWS,
+    cols: COLS,
+    grid,
+    queue: buildQueue(grid),
+    colors: { ...palette, ...BREAKABLE_BG_PALETTES[id] },
   }
-  return mask
 }
 
-const strawberryLevel = {
+const strawberryLevel = buildStaticLevel({
   id: 'strawberry',
   name: 'Strawberry',
-  buildMask: buildStrawberryMask,
-  lightRow: STRAWBERRY_TOP + 5,
-  lightCol: CX - STRAWBERRY_MAX_HALF_WIDTH * 0.55,
-  maxHalfWidth: STRAWBERRY_MAX_HALF_WIDTH,
-  seedTest: (row, col, coreDist) => (row * 7 + col * 5) % 9 === 0 && row > STRAWBERRY_TOP + 3 && coreDist > 5.2,
-  palette: {
-    outline: '#4a1220',
-    bodyLight: '#ff7a8c',
-    body: '#f0405a',
-    bodyShade: '#a81836',
-    accentA: '#4fbf63',
-    accentB: '#2f8f4a',
-    seed: '#ffd23f',
-    shineCore: '#ffe6ee',
-    shineSoft: '#ffc3cf',
-  },
-}
+  grid: buildStrawberryStaticGrid(),
+  palette: STRAWBERRY_STATIC_PALETTE,
+})
 
 // ---- Orange: round body + small stem nub ----
 
@@ -291,51 +310,17 @@ const orangeLevel = {
   },
 }
 
-// ---- Watermelon: big round rind + fleck texture + stem nub ----
-
-const MELON_R = 15.5
-const MELON_CENTER_ROW = CY + 1
-
-function buildWatermelonMask() {
-  const stemRow = MELON_CENTER_ROW - MELON_R
-  const mask = []
-  for (let row = 0; row < ROWS; row += 1) {
-    const line = []
-    for (let col = 0; col < COLS; col += 1) {
-      const dist = Math.hypot(row - MELON_CENTER_ROW, col - CX)
-      if (dist <= MELON_R) {
-        line.push('body')
-      } else if (row >= stemRow - 2 && row < stemRow && Math.abs(col - CX) <= 1.5) {
-        line.push('accent')
-      } else {
-        line.push(null)
-      }
-    }
-    mask.push(line)
-  }
-  return mask
-}
-
-const watermelonLevel = {
+// ---- Watermelon: static, hand-authored tile map ----
+// Same exception as Strawberry (see buildStaticLevel above): imported as-is
+// from watermelon_static_map.js, no formula/mask involved. Its color counts
+// are already exact multiples of ten (see WATERMELON_STATIC_COUNTS in that
+// file), so - like Strawberry - it only needs the shared queue step.
+const watermelonLevel = buildStaticLevel({
   id: 'watermelon',
   name: 'Watermelon',
-  buildMask: buildWatermelonMask,
-  lightRow: MELON_CENTER_ROW - MELON_R * 0.5,
-  lightCol: CX - MELON_R * 0.5,
-  maxHalfWidth: MELON_R,
-  seedTest: (row, col, coreDist) => (row * 5 + col * 3) % 17 === 0 && coreDist > 6,
-  palette: {
-    outline: '#1f4d1f',
-    bodyLight: '#6fcf6f',
-    body: '#3fae57',
-    bodyShade: '#1f7a3d',
-    accentA: '#7a4a24',
-    accentB: '#5a3418',
-    seed: '#163a1f',
-    shineCore: '#eaffe0',
-    shineSoft: '#b8f0b0',
-  },
-}
+  grid: buildWatermelonStaticGrid(),
+  palette: WATERMELON_STATIC_PALETTE,
+})
 
 // ---- Lemon: elongated oval body + stem nub ----
 
@@ -445,11 +430,16 @@ const grapesLevel = {
   },
 }
 
-// Every playable map, in selector order. Each is generated independently
-// through the exact same pipeline, so every one satisfies the same
-// balance rule by construction: total pig ammo for a color always exactly
-// equals that color's total pixel count.
-export const LEVELS = [strawberryLevel, orangeLevel, watermelonLevel, lemonLevel, grapesLevel].map(buildLevel)
+// Every playable map, in selector order. Strawberry is already a finished
+// level object (static map); the rest are descriptors run through
+// buildLevel. Every one still satisfies the same balance rule: total pig
+// ammo for a color always exactly equals that color's total pixel count.
+export const LEVELS = [
+  strawberryLevel,
+  buildLevel(orangeLevel),
+  watermelonLevel,
+  ...[lemonLevel, grapesLevel].map(buildLevel),
+]
 
 export const DEFAULT_LEVEL_ID = LEVELS[0].id
 

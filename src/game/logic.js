@@ -1,46 +1,13 @@
-import { ACTIVE_CAPACITY, COLS, HOLDING_CAPACITY, LEVELS, QUEUE_COLUMNS, ROWS } from './level'
+import { ACTIVE_CAPACITY, HOLDING_CAPACITY, LEVELS, PROJECTILE_MS, QUEUE_COLUMNS } from './level'
+import { CONVEYOR_PATH, LAST_STEP, STEP_DURATIONS_MS } from './conveyor'
+
+export { CONVEYOR_PATH }
 
 let nextId = 1
 
 export function createUnit(color, ammo) {
   return { id: nextId++, color, ammo }
 }
-
-// Builds the rectangular conveyor loop that surrounds the grid.
-// Order: bottom (left->right), right (bottom->top), top (right->left),
-// left (top->bottom) - a counterclockwise lap starting at the bottom-left.
-// Each step records the line of grid cells it can see, ordered nearest
-// to farthest, so targeting only ever hits the pixel closest to that side.
-export function buildConveyorPath(rows, cols) {
-  const path = []
-
-  for (let col = 0; col < cols; col += 1) {
-    const cells = []
-    for (let row = rows - 1; row >= 0; row -= 1) cells.push({ row, col })
-    path.push({ side: 'bottom', col, row: null, cells })
-  }
-  for (let row = rows - 1; row >= 0; row -= 1) {
-    const cells = []
-    for (let col = cols - 1; col >= 0; col -= 1) cells.push({ row, col })
-    path.push({ side: 'right', row, col: null, cells })
-  }
-  for (let col = cols - 1; col >= 0; col -= 1) {
-    const cells = []
-    for (let row = 0; row < rows; row += 1) cells.push({ row, col })
-    path.push({ side: 'top', col, row: null, cells })
-  }
-  for (let row = 0; row < rows; row += 1) {
-    const cells = []
-    for (let col = 0; col < cols; col += 1) cells.push({ row, col })
-    path.push({ side: 'left', row, col: null, cells })
-  }
-
-  return path
-}
-
-// Every fruit map shares the same board size, so the conveyor loop itself
-// never needs to be rebuilt when the player switches maps.
-export const CONVEYOR_PATH = buildConveyorPath(ROWS, COLS)
 
 // The queue is stored as QUEUE_COLUMNS persistent stacks (front = index 0 =
 // the clickable top), not a flat list re-split by index on every render -
@@ -99,13 +66,8 @@ export function findAlignedTarget(grid, reserved, cells, color) {
 // The grid is by far the biggest piece of state (hundreds of cells) and,
 // with the fast movement clock calling tick() many times per second, it
 // would be wastefully expensive to deep-clone and re-render it on every
-// single call - especially since most calls don't touch it at all (a
-// shot's countdown has to reach zero first). So the clone keeps the
-// SAME grid array reference by default; only mutateGrid (below) - called
-// exactly when a shot actually resolves - copies it, once per tick at
-// most. That keeps the grid reference stable (and cheap to skip
-// re-rendering, via PixelGrid's memoization in Game.jsx) on every call
-// where nothing was actually removed.
+// single call. The clone keeps the SAME grid array reference by default;
+// only removePixel (inside tick) copies it, once per tick at most.
 function cloneState(state) {
   return {
     ...state,
@@ -124,13 +86,29 @@ function checkWin(state) {
 }
 
 // Park a unit that still has ammo but nothing to shoot.
-// Lose only when a unit needs a slot and all 5 are already full.
+// Lose only when a unit needs a slot and all HOLDING_CAPACITY are already
+// full - see Game.jsx for the brief "6th slot" overflow visualization
+// shown at that exact moment, before Game Over.
 function parkUnit(state, unit) {
   if (state.holding.length >= HOLDING_CAPACITY) {
     state.status = 'lost'
+    state.overflowUnit = unit
     return
   }
   state.holding.push(unit)
+}
+
+// Up to ACTIVE_CAPACITY shooters can be on the conveyor at once, and each
+// needs its own distinct perpendicular render lane (see perpOffsetXY in
+// Game.jsx) so they never visually overlap. A unit keeps the same lane for
+// its whole run, assigned here as the lowest index not already in use by
+// another currently-active unit - since dispatch is only ever allowed
+// below ACTIVE_CAPACITY, a free lane always exists.
+function assignLane(path) {
+  const used = new Set(path.map((unit) => unit.lane))
+  let lane = 0
+  while (used.has(lane)) lane += 1
+  return lane
 }
 
 // Only the top (index 0) of a column is ever dispatchable - matching only
@@ -147,8 +125,13 @@ export function dispatchUnit(state, unitId) {
 
   const [unit] = next.queue[columnIndex].splice(0, 1)
   // Every unit enters the conveyor at the same fixed point: step 0, the
-  // start of the bottom side.
+  // start of the bottom side. `elapsedMs` tracks real time toward
+  // completing the glide to step 1; `scanned` guards step 0 itself, which
+  // needs no glide (it's the entry point) but still needs its one scan.
   unit.step = 0
+  unit.elapsedMs = 0
+  unit.scanned = false
+  unit.lane = assignLane(next.path)
   unit.pendingShots = []
   next.path.push(unit)
   return next
@@ -169,38 +152,21 @@ export function reactivateHoldingUnit(state, unitId) {
 
   const [unit] = next.holding.splice(index, 1)
   unit.step = 0
+  unit.elapsedMs = 0
+  unit.scanned = false
+  unit.lane = assignLane(next.path)
   unit.pendingShots = []
   next.path.push(unit)
   return next
 }
 
-// Everything below runs on ONE clock (called from Game.jsx's fast movement
-// interval, every step), so a pig's position advances - and every side it
-// travels gets a fresh look for targets - at full conveyor speed with
-// nothing skipped. "Shooting speed" (how long a fired volley takes to
-// actually land and spend its ammo) is a separate, independent concept:
-// firing only *reserves* each target (so nothing else can claim it) and
-// starts a shared countdown of `resolveDelaySteps` calls (sized in
-// Game.jsx from PROJECTILE_MS, so a volley resolves - and its pixel
-// disappears - exactly when its projectile visually arrives, regardless of
-// how many calls-per-second this function is now getting); the ammo cost
-// and each pixel's actual removal only happen once that countdown reaches
-// zero.
-// That keeps "ammo spent" and "pixels removed" permanently 1:1 - a shot
-// can never spend ammo without also removing exactly the pixel it
-// claimed, so no color can end up with leftover ammo or a leftover pixel.
-//
-// A pig only ever fires at the single pixel aligned with its current x/y
-// position on the belt (see findAlignedTarget) - never more than one
-// projectile per pixel, and never more projectiles in flight at once than
-// it has ammo for (unit.pendingShots.length < unit.ammo, since ammo is
-// only actually spent when a shot resolves). Firing never pauses
-// movement - the pig advances every call regardless, immediately scanning
-// its next aligned line next tick and firing again right away if that one
-// also has a match, with no delay for any previously-fired shot to
-// resolve first. Every active pig does all of this independently: there
-// is no shared turn order and no pig waits for another.
-export function tick(state, resolveDelaySteps = 1) {
+// Everything below runs on one real-time-driven clock (Game.jsx passes the
+// actual elapsed ms since the previous call, from a requestAnimationFrame
+// loop) so a shooter's logical step and its visible CSS glide - both timed
+// from the exact same STEP_DURATIONS_MS - can never drift apart: the next
+// scan position is only ever reached once its own step duration has
+// actually elapsed, on straight sides and corners alike.
+export function tick(state, deltaMs) {
   if (state.status !== 'playing') return state
 
   const next = cloneState(state)
@@ -218,17 +184,18 @@ export function tick(state, resolveDelaySteps = 1) {
     next.grid[row][col] = null
   }
 
-  // Resolve pass: a volley's countdown can span many calls (not just
-  // one), so first let every unit's own pending volley (if its countdown
-  // has reached zero) resolve - every pixel in it removed, one ammo spent
-  // per pixel - before anything looks for new targets.
+  // Resolve pass: a volley's countdown is real elapsed time (ms), not a
+  // tick count, so it always resolves - and its pixel disappears - after
+  // exactly PROJECTILE_MS, regardless of how many calls-per-second this
+  // function is getting. Every unit's own pending volley resolves here,
+  // before anything looks for new targets.
   for (const unit of next.path) {
     if (unit.pendingShots.length === 0) continue
 
     const remaining = []
     for (const shot of unit.pendingShots) {
-      shot.remaining -= 1
-      if (shot.remaining <= 0) {
+      shot.remainingMs -= deltaMs
+      if (shot.remainingMs <= 0) {
         removePixel(shot.to.row, shot.to.col)
         unit.ammo -= 1
       } else {
@@ -239,15 +206,32 @@ export function tick(state, resolveDelaySteps = 1) {
   }
 
   // A cell claimed by any STILL-in-flight shot (fired this call or many
-  // calls ago, by this pig or another one - it doesn't matter which) must
-  // stay off-limits to every other shot for as long as it's pending, not
-  // just for the one call it was fired on - otherwise two projectiles
+  // calls ago, by this pig or another one) must stay off-limits to every
+  // other shot for as long as it's pending - otherwise two projectiles
   // could both claim the same not-yet-removed pixel.
   const reserved = new Set()
   for (const unit of next.path) {
     for (const shot of unit.pendingShots) {
       reserved.add(`${shot.to.row},${shot.to.col}`)
     }
+  }
+
+  // Scans the single conveyor position `unit.step` is currently at and
+  // fires if it finds a match - called exactly once per position, right
+  // when the unit arrives there (step 0 on dispatch, every later step the
+  // instant its own glide finishes) - never repeated while the unit then
+  // waits (for its next glide, or for this shot to resolve).
+  function scanAndMaybeFire(unit) {
+    if (unit.pendingShots.length >= unit.ammo) return
+    const step = CONVEYOR_PATH[unit.step]
+    const target = findAlignedTarget(next.grid, reserved, step.cells, unit.color)
+    if (!target) return
+    // `from` is captured once, right here, at the pig's position at the
+    // moment of firing - not recomputed later - so the projectile's
+    // rendered flight path stays fixed even though the pig itself keeps
+    // moving on immediately after.
+    unit.pendingShots = [...unit.pendingShots, { to: target, from: step, remainingMs: PROJECTILE_MS }]
+    reserved.add(`${target.row},${target.col}`)
   }
 
   const stillActive = []
@@ -260,29 +244,26 @@ export function tick(state, resolveDelaySteps = 1) {
       continue
     }
 
-    // Only fire if there's ammo not already committed to a still-in-flight
-    // shot (pendingShots.length < ammo) - this never blocks on a previous
-    // shot resolving, it just caps total outstanding commitments.
-    if (unit.pendingShots.length < unit.ammo) {
-      const step = CONVEYOR_PATH[unit.step]
-      const target = findAlignedTarget(next.grid, reserved, step.cells, unit.color)
-      if (target) {
-        // `from` is captured once, right here, at the pig's position at
-        // the moment of firing - not recomputed later - so the
-        // projectile's rendered flight path stays fixed even though the
-        // pig itself keeps moving on to somewhere else immediately after.
-        unit.pendingShots = [...unit.pendingShots, { to: target, from: step, remaining: resolveDelaySteps }]
-        reserved.add(`${target.row},${target.col}`)
-      }
+    if (!unit.scanned) {
+      scanAndMaybeFire(unit)
+      unit.scanned = true
     }
 
-    if (unit.step < CONVEYOR_PATH.length - 1) {
+    // Advance by real elapsed time - every conveyor position in between
+    // gets its own scan, in order, even if a slow frame lets elapsedMs
+    // jump more than one step's worth at once; the unit is never moved to
+    // Holding before this loop reaches (and scans) its final position,
+    // and it's clamped at LAST_STEP so it never starts a second lap.
+    unit.elapsedMs += deltaMs
+    while (unit.step < LAST_STEP && unit.elapsedMs >= STEP_DURATIONS_MS[unit.step + 1]) {
+      unit.elapsedMs -= STEP_DURATIONS_MS[unit.step + 1]
       unit.step += 1
+      scanAndMaybeFire(unit)
     }
 
-    if (unit.step >= CONVEYOR_PATH.length - 1 && unit.pendingShots.length === 0) {
-      // At the final position with nothing left in flight - it's
-      // genuinely completed its one lap.
+    if (unit.step >= LAST_STEP && unit.pendingShots.length === 0) {
+      // At the final position, already scanned, with nothing left in
+      // flight - it's genuinely completed its one lap.
       justParked.push(unit)
     } else {
       stillActive.push(unit)
@@ -294,9 +275,9 @@ export function tick(state, resolveDelaySteps = 1) {
   // Every currently in-flight shot, from every active pig - not just the
   // ones fired this exact call - so a projectile's element stays mounted
   // (and its CSS flight animation keeps playing) for its whole real
-  // flight time, not just the ~12ms until the next movement tick.
+  // flight time.
   next.shots = next.path.flatMap((unit) =>
-    unit.pendingShots.map((shot) => ({ unitId: unit.id, color: unit.color, from: shot.from, to: shot.to })),
+    unit.pendingShots.map((shot) => ({ unitId: unit.id, lane: unit.lane, color: unit.color, from: shot.from, to: shot.to })),
   )
 
   // Park anyone who just finished their lap. Holding is otherwise
@@ -329,20 +310,89 @@ export function colorBalance(state) {
   return { pixels, ammo }
 }
 
+// The set of colors currently exposed as the nearest cell on at least one
+// of the 140 conveyor lines - i.e. colors some shooter could plausibly
+// hit right now. Ignores in-flight reservations (a cheap, slightly
+// optimistic snapshot), which is fine for a scheduling heuristic.
+function frontierColors(grid) {
+  const colors = new Set()
+  for (const step of CONVEYOR_PATH) {
+    for (const { row, col } of step.cells) {
+      const value = grid[row][col]
+      if (value) {
+        colors.add(value)
+        break
+      }
+    }
+  }
+  return colors
+}
+
+// A single simulated step of greedy auto-play, used by both the
+// solvability check below and (implicitly) documents what "good" greedy
+// play looks like: a column top is always dispatchable-in-principle (the
+// only way a column can ever advance is to dispatch its current top, so
+// this never skips one, useful or not), while Holding - which has no
+// such ordering constraint - is reactivated by preference for whichever
+// units are currently useful (their color is on the frontier), so a
+// pig that's proven unproductive doesn't keep monopolizing an active
+// slot just because it happened to be first in line. Once Holding gets
+// close to overflowing, draining it takes priority over pulling in more
+// fresh queue units, so it can never be starved into overflow either.
+function autoPlayStep(state) {
+  let next = state
+  let freeSlots = ACTIVE_CAPACITY - next.path.length
+  if (freeSlots <= 0) return next
+
+  if (next.holding.length >= HOLDING_CAPACITY - 1) {
+    const byAmmo = [...next.holding].sort((a, b) => a.ammo - b.ammo)
+    for (const unit of byAmmo) {
+      if (freeSlots <= 0) break
+      next = reactivateHoldingUnit(next, unit.id)
+      freeSlots -= 1
+    }
+  }
+
+  while (freeSlots > 0) {
+    const frontier = frontierColors(next.grid)
+    const queueTop = next.queue.filter((column) => column.length > 0).map((column) => column[0])
+    const holding = [...next.holding].sort((a, b) => a.ammo - b.ammo)
+    const usefulQueue = queueTop.filter((unit) => frontier.has(unit.color))
+    const usefulHolding = holding.filter((unit) => frontier.has(unit.color))
+
+    if (usefulQueue.length > 0) {
+      next = dispatchUnit(next, usefulQueue[0].id)
+    } else if (usefulHolding.length > 0) {
+      next = reactivateHoldingUnit(next, usefulHolding[0].id)
+    } else if (queueTop.length > 0) {
+      // Nothing currently looks useful anywhere - still dispatch a fresh
+      // queue unit rather than a Holding one, since that's the only way a
+      // column can ever progress toward whatever's queued behind its
+      // current (temporarily unhelpful) top.
+      next = dispatchUnit(next, queueTop[0].id)
+    } else {
+      break
+    }
+    freeSlots -= 1
+  }
+
+  return next
+}
+
 // Dev-only sanity checks, run once at module load - never affect real
 // gameplay, only warn in the console.
 // 1) Balance: ammo is only ever generated in tens (10/20/30) and every
 //    color's total queue ammo must exactly equal that color's total pixel
 //    count (see level.js) - if level generation ever regresses, this
-//    catches it immediately instead of silently letting a color get stuck
-//    with leftover ammo or an unreachable pixel.
-// 2) Solvability: a cheap greedy auto-play (always dispatch whatever's
-//    available, always reactivate Holding when there's room) run against
-//    the real tick()/dispatchUnit(). Since ammo==pixels per color by
-//    construction, a correctly-generated level should always fully clear
-//    this way; if it doesn't within a generous iteration budget, that's a
-//    strong signal of an actual soft-lock (not proof, since greedy timing
-//    isn't optimal play - just a heads-up).
+//    catches it immediately.
+// 2) Solvability: the greedy auto-play above, run against the real
+//    tick()/dispatchUnit(). Since ammo==pixels per color by construction,
+//    a correctly-generated level should fully clear this way. This is
+//    still not a proof either way - a real player can make choices this
+//    simple heuristic can't - so a level that doesn't finish in the
+//    iteration budget is logged as inconclusive, not "unsolvable",
+//    unless progress has genuinely and completely stopped for a very
+//    long stretch (a real stall), which is logged distinctly.
 function validateLevelDev(level) {
   const state = createInitialState(level)
   const tag = `[level:${level.id}]`
@@ -365,34 +415,35 @@ function validateLevelDev(level) {
   }
 
   let sim = state
-  const MAX_ITERATIONS = 200000
-  for (let i = 0; i < MAX_ITERATIONS && sim.status === 'playing' && countPixels(sim.grid) > 0; i += 1) {
-    // Drain Holding first - recycling a leftover-ammo pig for another lap
-    // before pulling in a brand new one is what real play should do, and
-    // it's also required for the single-aligned-target rule to ever fully
-    // clear a color: most pigs won't spend all their ammo in one lap (they
-    // only fire when their color happens to be exposed on the exact line
-    // they're passing), so multiple relaunches per pig are expected, not a
-    // sign of a stuck level.
-    for (const unit of [...sim.holding]) {
-      if (sim.path.length < ACTIVE_CAPACITY) {
-        sim = reactivateHoldingUnit(sim, unit.id)
-      }
-    }
-    for (const column of sim.queue) {
-      if (column.length > 0 && sim.path.length < ACTIVE_CAPACITY) {
-        sim = dispatchUnit(sim, column[0].id)
-      }
-    }
+  const MAX_ITERATIONS = 400000
+  const STALL_LIMIT = 20000
+  let lastPixels = countPixels(sim.grid)
+  let stall = 0
+  let i = 0
+  for (; i < MAX_ITERATIONS && sim.status === 'playing' && countPixels(sim.grid) > 0; i += 1) {
+    sim = autoPlayStep(sim)
     sim = tick(sim, 1)
+    const pixelsLeft = countPixels(sim.grid)
+    if (pixelsLeft === lastPixels) {
+      stall += 1
+      if (stall >= STALL_LIMIT) break
+    } else {
+      stall = 0
+      lastPixels = pixelsLeft
+    }
   }
+
+  if (countPixels(sim.grid) === 0) return
 
   if (sim.status === 'lost') {
     // eslint-disable-next-line no-console
-    console.warn(`${tag} solvability check: greedy auto-play lost (Holding overflowed) - level may be too tight or genuinely unsolvable.`)
-  } else if (countPixels(sim.grid) > 0) {
+    console.warn(`${tag} solvability check: greedy auto-play lost (Holding overflowed) after clearing ${countPixels(state.grid) - countPixels(sim.grid)}/${countPixels(state.grid)} pixels - inconclusive (a real player can sequence pigs this simple heuristic can't), verify manually.`)
+  } else if (stall >= STALL_LIMIT) {
     // eslint-disable-next-line no-console
-    console.warn(`${tag} solvability check: greedy auto-play did not clear the level in time - possible soft-lock, investigate.`)
+    console.warn(`${tag} solvability check: genuinely stuck - zero pixels cleared for ${STALL_LIMIT} consecutive ticks with ${countPixels(sim.grid)} pixels remaining. Likely unsolvable - investigate.`)
+  } else {
+    // eslint-disable-next-line no-console
+    console.warn(`${tag} solvability check: did not finish within ${MAX_ITERATIONS} ticks (${countPixels(sim.grid)} pixels remaining, steady progress was still being made) - inconclusive for this larger level, verify manually.`)
   }
 }
 

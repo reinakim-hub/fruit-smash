@@ -1,126 +1,29 @@
-import { memo, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   ACTIVE_CAPACITY,
-  CELL_GAP,
   CELL_SIZE,
   COLS,
-  CONVEYOR_LOOP_MS,
   CONVEYOR_MARGIN,
   DEFAULT_LEVEL_ID,
   HOLDING_CAPACITY,
   LEVELS,
   PROJECTILE_MS,
-  ROWS,
 } from './level'
 import {
-  colorBalance,
   CONVEYOR_PATH,
-  countPixels,
-  createInitialState,
-  dispatchUnit,
-  reactivateHoldingUnit,
-  tick,
-} from './logic'
-
-// A single fast clock drives everything, sized so a shooter covers the
-// entire conveyor loop (every logical step) in CONVEYOR_LOOP_MS, no
-// matter how many steps the loop has. Every step still gets its own full
-// targeting check - nothing is skipped - but a shot's own resolve delay
-// (RESOLVE_DELAY_STEPS below) is calculated from PROJECTILE_MS, the
-// projectile's real flight-animation time, so a pixel is only ever removed
-// exactly when its dot visually arrives - never before, never after -
-// regardless of how fast the pig itself is gliding between positions.
-const MOVE_INTERVAL_MS = Math.max(1, CONVEYOR_LOOP_MS / CONVEYOR_PATH.length)
-const RESOLVE_DELAY_STEPS = Math.max(1, Math.round(PROJECTILE_MS / MOVE_INTERVAL_MS))
-
-const STEP = CELL_SIZE + CELL_GAP
-const GRID_RIGHT = CONVEYOR_MARGIN + COLS * STEP - CELL_GAP
-const GRID_BOTTOM = CONVEYOR_MARGIN + ROWS * STEP - CELL_GAP
-const STAGE_WIDTH = GRID_RIGHT + CONVEYOR_MARGIN
-const STAGE_HEIGHT = GRID_BOTTOM + CONVEYOR_MARGIN
-
-function cellCenter(row, col) {
-  return {
-    x: CONVEYOR_MARGIN + col * STEP + CELL_SIZE / 2,
-    y: CONVEYOR_MARGIN + row * STEP + CELL_SIZE / 2,
-  }
-}
-
-// Where a conveyor step sits just outside the grid, facing inward.
-function stepPosition(step) {
-  switch (step.side) {
-    case 'bottom':
-      return { x: cellCenter(0, step.col).x, y: GRID_BOTTOM + CONVEYOR_MARGIN / 2 }
-    case 'top':
-      return { x: cellCenter(0, step.col).x, y: CONVEYOR_MARGIN / 2 }
-    case 'right':
-      return { x: GRID_RIGHT + CONVEYOR_MARGIN / 2, y: cellCenter(step.row, 0).y }
-    case 'left':
-    default:
-      return { x: CONVEYOR_MARGIN / 2, y: cellCenter(step.row, 0).y }
-  }
-}
-
-// The conveyor is a real rectangle, corners included. Shooters are animated
-// along this exact shape (via CSS offset-path) rather than tweened between
-// raw (x, y) points, so they can never cut a diagonal shortcut through a
-// corner - every step position above falls exactly on one of these four
-// straight edges.
-const LOOP_CORNERS = {
-  bl: { x: CONVEYOR_MARGIN / 2, y: GRID_BOTTOM + CONVEYOR_MARGIN / 2 },
-  br: { x: GRID_RIGHT + CONVEYOR_MARGIN / 2, y: GRID_BOTTOM + CONVEYOR_MARGIN / 2 },
-  tr: { x: GRID_RIGHT + CONVEYOR_MARGIN / 2, y: CONVEYOR_MARGIN / 2 },
-  tl: { x: CONVEYOR_MARGIN / 2, y: CONVEYOR_MARGIN / 2 },
-}
-
-const LOOP_WIDTH = LOOP_CORNERS.br.x - LOOP_CORNERS.bl.x
-const LOOP_HEIGHT = LOOP_CORNERS.bl.y - LOOP_CORNERS.tr.y
-const LOOP_PERIMETER = 2 * (LOOP_WIDTH + LOOP_HEIGHT)
-
-// Single source of truth for conveyor speed: derived directly from
-// CONVEYOR_LOOP_MS (the one real lap-time constant) and the loop's actual
-// perimeter, instead of an independent px/s constant. This guarantees the
-// visual glide always sums to exactly one CONVEYOR_LOOP_MS per lap and can
-// never drift out of sync with it - changing CONVEYOR_LOOP_MS alone still
-// keeps speed even on every side and through every corner.
-const CONVEYOR_SPEED = LOOP_PERIMETER / (CONVEYOR_LOOP_MS / 1000)
-
-const LOOP_PATH = `path('M ${LOOP_CORNERS.bl.x} ${LOOP_CORNERS.bl.y} L ${LOOP_CORNERS.br.x} ${LOOP_CORNERS.br.y} L ${LOOP_CORNERS.tr.x} ${LOOP_CORNERS.tr.y} L ${LOOP_CORNERS.tl.x} ${LOOP_CORNERS.tl.y} Z')`
-
-// A single continuous progress value: distance travelled along the loop,
-// starting at 0 at the fixed bottom-left entry point and increasing
-// counterclockwise (bottom -> right -> top -> left). Every step position
-// above falls on a straight edge of the true rectangle, so this value is
-// real physical distance along the belt - not a step index or percentage.
-function arcLengthForStep(step) {
-  const pos = stepPosition(step)
-  switch (step.side) {
-    case 'bottom':
-      return pos.x - LOOP_CORNERS.bl.x
-    case 'right':
-      return LOOP_WIDTH + (LOOP_CORNERS.br.y - pos.y)
-    case 'top':
-      return LOOP_WIDTH + LOOP_HEIGHT + (LOOP_CORNERS.tr.x - pos.x)
-    case 'left':
-    default:
-      return 2 * LOOP_WIDTH + LOOP_HEIGHT + (pos.y - LOOP_CORNERS.tl.y)
-  }
-}
-
-// Precomputed once: real distance (px) along the belt for every logical
-// conveyor step, and the real distance covered going from each step to the
-// next. A normal step and a corner-crossing step cover different physical
-// distances (a corner has left-over margin on both sides of it) - by
-// timing each move at the same CONVEYOR_SPEED (px/s) rather than a fixed
-// duration, a big corner move simply takes proportionally longer instead
-// of visibly speeding up.
-const STEP_ARC_LENGTHS = CONVEYOR_PATH.map((step) => arcLengthForStep(step))
-
-function moveDurationSeconds(step) {
-  if (step <= 0) return 0
-  const distance = STEP_ARC_LENGTHS[step] - STEP_ARC_LENGTHS[step - 1]
-  return distance / CONVEYOR_SPEED
-}
+  LAST_STEP,
+  LOOP_CORNERS,
+  LOOP_PATH,
+  LOOP_WIDTH,
+  LOOP_HEIGHT,
+  STAGE_WIDTH,
+  STAGE_HEIGHT,
+  STEP_ARC_LENGTHS,
+  STEP_DURATIONS_MS,
+  cellCenter,
+  stepPosition,
+} from './conveyor'
+import { colorBalance, countPixels, createInitialState, dispatchUnit, reactivateHoldingUnit, tick } from './logic'
 
 // The outward-facing direction for each side, used to spread overlapping
 // shooters apart WITHOUT ever moving them along the belt (which would
@@ -133,25 +36,49 @@ const PERP_NORMALS = {
   left: { x: -1, y: 0 },
 }
 
-const PERP_GAP = 10
+const PERP_GAP = 8
 
-// A small, fixed-per-unit sideways nudge (never along-path) so several
-// shooters sharing the exact same step don't render fully stacked. It's
-// keyed only by unit id - never by position or by who else is currently
-// nearby - so the SAME value is used both for rendering this unit's own
-// token and for rendering the origin of any projectile it fires, and the
-// two can never disagree.
-function perpOffsetForUnit(unitId) {
-  return ((unitId % 3) - 1) * PERP_GAP
+// Up to ACTIVE_CAPACITY shooters can be on the belt at once, so they need
+// that many distinct sideways nudges - keyed by each unit's own `lane`
+// (assigned in logic.js: the lowest lane index not already used by
+// another currently-active unit, so no two simultaneously-active units
+// can ever collide). Lane 0 always renders perfectly centered on the belt
+// (zero offset) - only lane 1+ nudge sideways at all, and always by a
+// positive multiple of PERP_GAP, i.e. only ever further OUTWARD along the
+// side's own outward normal (see PERP_NORMALS), never back in toward the
+// board. Since a unit's lane is fixed for its whole run (assigned once in
+// logic.js, never reassigned tick-to-tick), this offset can't grow over
+// time either - it's a pure function of that one fixed integer. The SAME
+// lane value renders both a unit's own token and the origin of any
+// projectile it fires, so the two can never disagree.
+function perpOffsetForLane(lane) {
+  return lane * PERP_GAP
 }
 
-function perpOffsetXY(side, unitId) {
+function perpOffsetXY(side, lane) {
   const normal = PERP_NORMALS[side]
-  const perp = perpOffsetForUnit(unitId)
+  const perp = perpOffsetForLane(lane)
   return { dx: normal.x * perp, dy: normal.y * perp }
 }
 
-const BELT_WIDTH = 10
+// A shooter's exact belt position, interpolated every render frame from
+// the same real-time progress logic.js uses to gate scanning
+// (unit.elapsedMs toward completing the glide to unit.step + 1) - so the
+// visible position is a continuous function of real time, never a
+// discrete per-step CSS transition. That's what makes movement read as
+// smooth and constant-speed (corners included) with no snap or pause,
+// while the actual target scan still only ever happens once per step, in
+// logic.js, completely unaffected by how often this renders.
+function currentArcLength(unit) {
+  const base = STEP_ARC_LENGTHS[unit.step]
+  if (unit.step >= LAST_STEP) return base
+  const segmentMs = STEP_DURATIONS_MS[unit.step + 1]
+  if (!segmentMs) return base
+  const fraction = Math.min(1, unit.elapsedMs / segmentMs)
+  return base + fraction * (STEP_ARC_LENGTHS[unit.step + 1] - base)
+}
+
+const BELT_WIDTH = 13
 const beltFrame = {
   top: {
     left: LOOP_CORNERS.tl.x - BELT_WIDTH / 2,
@@ -226,6 +153,36 @@ function UnitToken({ unit, colors, onClick, disabled }) {
   )
 }
 
+// Tracks whether a scrollable list has more content below its current
+// scroll position, so a bottom fade (the `.has-fade` mask in App.css) can
+// show only while that's actually true - not as a permanent decoration,
+// and not as a scrollbar (still hidden, still wheel/trackpad-scrollable).
+function useScrollFade(deps) {
+  const ref = useRef(null)
+  const [hasMore, setHasMore] = useState(false)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return undefined
+
+    function check() {
+      setHasMore(el.scrollHeight - el.scrollTop - el.clientHeight > 1)
+    }
+
+    check()
+    el.addEventListener('scroll', check)
+    const observer = new ResizeObserver(check)
+    observer.observe(el)
+    return () => {
+      el.removeEventListener('scroll', check)
+      observer.disconnect()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps)
+
+  return [ref, hasMore]
+}
+
 // ---- Map selector ----
 
 const CLEARED_STORAGE_KEY = 'fruit-smash:cleared-maps'
@@ -249,6 +206,9 @@ function saveClearedIds(ids) {
   }
 }
 
+// Must be small enough that a thumbnail (cols/rows * THUMB_SCALE) plus
+// .map-tile's own padding/border still fits inside .map-selector's fixed,
+// compact width (see App.css) - otherwise it just gets clipped.
 const THUMB_SCALE = 3
 
 // A crisp little pixel-art preview of a map's actual board, drawn once to
@@ -284,30 +244,97 @@ const MapThumbnail = memo(function MapThumbnail({ level, cleared }) {
   )
 })
 
+// Must match .board-wrap's own CSS padding, so the measured available box
+// (the space actually left for the board) excludes it on both sides.
+const BOARD_WRAP_PADDING = 16
+
 export default function Game() {
   const [levelId, setLevelId] = useState(DEFAULT_LEVEL_ID)
   const level = useMemo(() => LEVELS.find((entry) => entry.id === levelId) || LEVELS[0], [levelId])
   const [state, setState] = useState(() => createInitialState(level))
   const [clearedIds, setClearedIds] = useState(loadClearedIds)
 
+  // The board/conveyor is laid out once at its native (STAGE_WIDTH x
+  // STAGE_HEIGHT) size - every targeting/rendering coordinate above
+  // depends on that fixed pixel grid. To make it fill ~88-92vh of the
+  // viewport (set via .board-wrap's CSS height) without touching any of
+  // that coordinate math, the whole native-size stage is wrapped in a box
+  // sized to `scale * native` and rendered with a matching CSS transform
+  // - so it's visually scaled up/down to exactly fit, centered, never
+  // cropped or overflowing, on any desktop viewport height.
+  const boardWrapRef = useRef(null)
+  const [scale, setScale] = useState(1)
+
+  useLayoutEffect(() => {
+    const el = boardWrapRef.current
+    if (!el) return undefined
+
+    function measure() {
+      const availWidth = el.clientWidth - BOARD_WRAP_PADDING * 2
+      const availHeight = el.clientHeight - BOARD_WRAP_PADDING * 2
+      const next = Math.min(availWidth / STAGE_WIDTH, availHeight / STAGE_HEIGHT)
+      if (next > 0 && Number.isFinite(next)) setScale(next)
+    }
+
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
   const pixelsLeft = countPixels(state.grid)
   const totalPixels = countPixels(level.grid)
   const canPlay = state.status === 'playing'
-  const canDispatch = canPlay && state.path.length < ACTIVE_CAPACITY
+  const isActiveFull = state.path.length >= ACTIVE_CAPACITY
   const isHoldingFull = state.holding.length >= HOLDING_CAPACITY
+  const isOverflowing = state.status === 'lost' && Boolean(state.overflowUnit)
 
-  // One fast clock drives every active pig, every step - full targeting
-  // coverage at full conveyor speed. Each fired shot still takes the same
-  // real amount of time (RESOLVE_DELAY_STEPS calls, sized from
-  // PROJECTILE_MS) to actually land and spend its ammo, so shooting speed
-  // itself hasn't changed - only how fast a pig glides between positions
-  // has.
+  // A pig stays visually available (never hard-disabled) purely because
+  // Active is full - clicking it then does nothing to game state but
+  // bumps this counter, which remounts the Active status chip (via its
+  // `key` below) to replay a brief red flash/shake every time, even on
+  // rapid repeated clicks.
+  const [activeWarningTick, setActiveWarningTick] = useState(0)
+
+  function dispatchOrWarn(unitId) {
+    if (!canPlay) return
+    if (isActiveFull) {
+      setActiveWarningTick((tick) => tick + 1)
+      return
+    }
+    setState((current) => dispatchUnit(current, unitId))
+  }
+
+  function reactivateOrWarn(unitId) {
+    if (!canPlay) return
+    if (isActiveFull) {
+      setActiveWarningTick((tick) => tick + 1)
+      return
+    }
+    setState((current) => reactivateHoldingUnit(current, unitId))
+  }
+
+  // A single requestAnimationFrame loop drives everything, passing tick()
+  // the real elapsed ms since the previous frame. logic.js gates each
+  // shooter's own step-advancement by that same real time (against
+  // STEP_DURATIONS_MS, the same numbers this file uses for each unit's
+  // CSS transition-duration below), so the logical position and the
+  // visible glide can never drift apart - the next scan position is only
+  // ever reached once its own glide has actually finished, corners
+  // included. Capped so a throttled/backgrounded tab can't feed one huge
+  // catch-up delta.
   useEffect(() => {
     if (!canPlay) return undefined
-    const id = window.setInterval(() => {
-      setState((current) => tick(current, RESOLVE_DELAY_STEPS))
-    }, MOVE_INTERVAL_MS)
-    return () => window.clearInterval(id)
+    let frameId
+    let last = performance.now()
+    function frame(now) {
+      const deltaMs = Math.min(now - last, 100)
+      last = now
+      setState((current) => tick(current, deltaMs))
+      frameId = window.requestAnimationFrame(frame)
+    }
+    frameId = window.requestAnimationFrame(frame)
+    return () => window.cancelAnimationFrame(frameId)
   }, [canPlay])
 
   // Debug validation: log remaining pixels and remaining ammo, by color,
@@ -342,6 +369,29 @@ export default function Game() {
     })
   }, [state.status, level.id])
 
+  // A loss triggered by a 6th pig needing a Holding slot with none free
+  // briefly shows that 6th, danger-styled overflow slot (see the "holding"
+  // section below) before the Game Over overlay covers it, so the player
+  // can actually see what caused the loss. A win still shows its overlay
+  // immediately - there's nothing to briefly reveal there.
+  const [overlayReady, setOverlayReady] = useState(false)
+  useEffect(() => {
+    if (state.status === 'won') {
+      setOverlayReady(true)
+      return undefined
+    }
+    if (state.status === 'lost' && state.overflowUnit) {
+      setOverlayReady(false)
+      const id = window.setTimeout(() => setOverlayReady(true), 900)
+      return () => window.clearTimeout(id)
+    }
+    setOverlayReady(state.status === 'lost')
+    return undefined
+  }, [state.status, state.overflowUnit])
+
+  const [mapListRef, mapListHasMore] = useScrollFade([])
+  const [queueRef, queueHasMore] = useScrollFade([state.queue])
+
   function restart() {
     setState(createInitialState(level))
   }
@@ -359,7 +409,7 @@ export default function Game() {
     <div className="game">
       <aside className="map-selector">
         <h2 className="panel-title">Maps</h2>
-        <div className="map-list">
+        <div className={`map-list${mapListHasMore ? ' has-fade' : ''}`} ref={mapListRef}>
           {LEVELS.map((entry) => (
             <button
               type="button"
@@ -375,8 +425,12 @@ export default function Game() {
         </div>
       </aside>
 
-      <section className="board-wrap">
-        <div className="conveyor-stage" style={{ width: STAGE_WIDTH, height: STAGE_HEIGHT }}>
+      <section className="board-wrap" ref={boardWrapRef}>
+        <div className="board-scale" style={{ width: STAGE_WIDTH * scale, height: STAGE_HEIGHT * scale }}>
+        <div
+          className="conveyor-stage"
+          style={{ width: STAGE_WIDTH, height: STAGE_HEIGHT, transform: `scale(${scale})` }}
+        >
           {Object.entries(beltFrame).map(([side, box]) => (
             <div
               key={side}
@@ -396,14 +450,17 @@ export default function Game() {
 
           {/* Every active pig is rendered here at once, each driven by its
               own step - none of them share a position or wait on each
-              other to move. offsetDistance comes straight from unit.step,
-              the same value targeting uses - overlap between pigs sharing
-              a step is resolved with a perpendicular offset-anchor nudge
-              only, which never changes that arc-length/step position. */}
+              other to move. offsetDistance is interpolated every frame
+              (see currentArcLength) from unit.step/elapsedMs, the same
+              real-time progress targeting uses, so the visible glide is
+              continuous and never tied to a per-step CSS transition -
+              overlap between pigs sharing a step is resolved with a
+              perpendicular offset-anchor nudge only, which never changes
+              that arc-length/step position. */}
           {state.path.map((unit) => {
             const step = CONVEYOR_PATH[unit.step]
-            const distance = arcLengthForStep(step)
-            const { dx, dy } = perpOffsetXY(step.side, unit.id)
+            const distance = currentArcLength(unit)
+            const { dx, dy } = perpOffsetXY(step.side, unit.lane)
             return (
               <div
                 // Keyed by unit id so a *different* unit taking over a
@@ -416,7 +473,6 @@ export default function Game() {
                   offsetPath: LOOP_PATH,
                   offsetDistance: `${distance}px`,
                   offsetAnchor: `calc(50% - ${dx}px) calc(50% - ${dy}px)`,
-                  transitionDuration: `${moveDurationSeconds(unit.step)}s`,
                 }}
                 aria-label={`${unit.color} pig, ${unit.ammo} ammo`}
               >
@@ -434,7 +490,7 @@ export default function Game() {
             // projectile always starts exactly where its shooter is
             // actually rendered, never from the unshifted/raw position.
             const base = stepPosition(shot.from)
-            const { dx, dy } = perpOffsetXY(shot.from.side, shot.unitId)
+            const { dx, dy } = perpOffsetXY(shot.from.side, shot.lane)
             const from = { x: base.x + dx, y: base.y + dy }
             const to = cellCenter(shot.to.row, shot.to.col)
             return (
@@ -457,12 +513,14 @@ export default function Game() {
             )
           })}
         </div>
+        </div>
       </section>
 
-      {/* Fixed to the board's height so the panel never resizes or jumps
-          as the queue empties or Holding fills - only the queue's own
-          internal list scrolls (see .queue-columns). */}
-      <aside className="side-panel" style={{ height: STAGE_HEIGHT + 34 }}>
+      {/* Stretched to the board-wrap's own height (see .game's
+          align-items: stretch in App.css) so the panel never resizes or
+          jumps as the queue empties or Holding fills - only the queue's
+          own internal list scrolls (see .queue-columns). */}
+      <aside className="side-panel">
         <header className="top-bar">
           <div>
             <h1>Fruit Smash</h1>
@@ -484,12 +542,19 @@ export default function Game() {
         </div>
 
         <div className="status-row">
-          <span className="status-chip">Active {state.path.length}/{ACTIVE_CAPACITY}</span>
+          <span
+            key={activeWarningTick}
+            className={`status-chip chip-active${activeWarningTick > 0 ? ' active-warning' : ''}`}
+          >
+            Active {state.path.length}/{ACTIVE_CAPACITY}
+          </span>
           {/* Holding 5/5 is only a warning - full, but not game over yet.
               Game Over only actually triggers if a 6th pig then needs a
-              slot with none free (see parkUnit in logic.js). */}
-          <span className={`status-chip${isHoldingFull ? ' danger' : ''}`}>
-            Holding {state.holding.length}/{HOLDING_CAPACITY}
+              slot with none free (see parkUnit in logic.js), at which
+              point this briefly reads 6/5 to match the extra overflow
+              slot rendered below. */}
+          <span className={`status-chip chip-holding${isHoldingFull ? ' danger' : ''}`}>
+            Holding {state.holding.length + (isOverflowing ? 1 : 0)}/{HOLDING_CAPACITY}
           </span>
         </div>
 
@@ -504,13 +569,23 @@ export default function Game() {
                       key={unit.id}
                       unit={unit}
                       colors={level.colors}
-                      disabled={!canDispatch}
-                      onClick={() => setState((current) => reactivateHoldingUnit(current, unit.id))}
+                      disabled={!canPlay}
+                      onClick={() => reactivateOrWarn(unit.id)}
                     />
                   ) : null}
                 </div>
               )
             })}
+            {/* A 6th slot, shown only for the brief window between a
+                6th pig failing to find a Holding slot and the Game Over
+                overlay appearing - never a permanent 6th slot. Its
+                danger styling makes clear THIS pig is what overflowed
+                Holding and caused the loss. */}
+            {isOverflowing && (
+              <div className="hold-slot hold-slot-overflow">
+                <UnitToken unit={state.overflowUnit} colors={level.colors} disabled />
+              </div>
+            )}
           </div>
         </section>
 
@@ -519,17 +594,18 @@ export default function Game() {
           {state.queue.every((column) => column.length === 0) ? (
             <span className="hint">Queue is empty</span>
           ) : (
-            <div className="queue-columns">
+            <div className={`queue-columns${queueHasMore ? ' has-fade' : ''}`} ref={queueRef}>
               {state.queue.map((column, columnIndex) => (
                 <div className="queue-column" key={columnIndex}>
                   {column.map((unit, rowIndex) => (
-                    <UnitToken
-                      key={unit.id}
-                      unit={unit}
-                      colors={level.colors}
-                      disabled={rowIndex !== 0 || !canDispatch}
-                      onClick={() => setState((current) => dispatchUnit(current, unit.id))}
-                    />
+                    <div className="queue-slot" key={unit.id}>
+                      <UnitToken
+                        unit={unit}
+                        colors={level.colors}
+                        disabled={rowIndex !== 0 || !canPlay}
+                        onClick={() => dispatchOrWarn(unit.id)}
+                      />
+                    </div>
                   ))}
                 </div>
               ))}
@@ -538,7 +614,7 @@ export default function Game() {
         </section>
       </aside>
 
-      {state.status !== 'playing' && (
+      {state.status !== 'playing' && overlayReady && (
         <div className="overlay">
           <div className="overlay-card">
             <h2>{state.status === 'won' ? 'You Win!' : 'Game Over'}</h2>

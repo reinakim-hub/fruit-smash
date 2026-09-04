@@ -16,14 +16,33 @@
   --pixel-font: 'Press Start 2P', 'Courier New', monospace;
   color-scheme: light;
 
-  display: grid;
-  grid-template-columns: 116px auto minmax(230px, 280px);
-  align-items: start;
+  display: flex;
+  align-items: stretch;
   gap: 16px;
-  max-width: 960px;
+  width: 100%;
+  height: 90vh;
+  max-width: 1500px;
   color: var(--text);
   text-align: left;
   image-rendering: pixelated;
+}
+
+/* Left map selector and right UI panel stay fixed/compact widths and are
+   stretched (via .game's align-items: stretch) to the same height as the
+   center board - which is the one flexible column, sized to fill
+   whatever width is left so it stays the visual focus. */
+.map-selector {
+  flex: 0 0 150px;
+}
+
+.side-panel {
+  flex: 0 0 260px;
+}
+
+.board-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
 }
 
 /* Reusable chunky pixel-panel look: solid dark outline, a hard offset
@@ -45,7 +64,7 @@
 .top-bar h1 {
   margin: 0;
   font-family: var(--pixel-font);
-  font-size: 14px;
+  font-size: 16px;
   line-height: 1.4;
   letter-spacing: -0.5px;
   color: var(--accent-dark);
@@ -55,7 +74,7 @@
 .top-bar p {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -67,33 +86,33 @@
 .panel-title {
   margin: 0 0 8px;
   font-family: var(--pixel-font);
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.02em;
   color: var(--accent-dark);
   text-align: center;
 }
 
 .restart {
-  border: 3px solid var(--ink);
+  border: 4px solid var(--ink);
   border-radius: 4px;
   background: var(--accent);
   color: #fff;
-  padding: 8px 10px;
+  padding: 12px 18px;
   font-family: var(--pixel-font);
-  font-size: 9px;
+  font-size: 11px;
   cursor: pointer;
-  box-shadow: 3px 3px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
+  box-shadow: 4px 4px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
   transition: transform 0.08s steps(2), box-shadow 0.08s steps(2);
 }
 
 .restart:hover {
   transform: translate(-1px, -1px);
-  box-shadow: 4px 4px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
+  box-shadow: 5px 5px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
 }
 
 .restart:active {
   transform: translate(2px, 2px);
-  box-shadow: 1px 1px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
+  box-shadow: 2px 2px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
 }
 
 /* Right-hand game panel: level info, progress, holding, queue. The board
@@ -120,18 +139,23 @@
   flex-shrink: 0;
 }
 
+/* A subtle pastel accent block behind the progress bar, distinguishing it
+   as its own section of the cream side panel without competing with it. */
 .progress-card {
   display: flex;
   align-items: center;
   gap: 10px;
+  padding: 8px;
+  background: #ffe3ea;
+  border-radius: 4px;
 }
 
 /* Chunky segmented progress bar: a repeating hard-edged gradient carves
    the fill into blocky ticks instead of a smooth gradient. */
 .progress-track {
   flex: 1;
-  height: 14px;
-  border: 3px solid var(--ink);
+  height: 22px;
+  border: 4px solid var(--ink);
   border-radius: 3px;
   background: #ffe6c2;
   box-shadow: inset 2px 2px 0 rgba(64, 42, 28, 0.18);
@@ -142,15 +166,15 @@
   height: 100%;
   background: repeating-linear-gradient(
       90deg,
-      rgba(0, 0, 0, 0.14) 0 3px,
-      transparent 3px 9px
+      rgba(0, 0, 0, 0.14) 0 4px,
+      transparent 4px 12px
     ),
     linear-gradient(180deg, #8ee89a 0%, var(--leaf) 55%, #2f8f4a 100%);
 }
 
 .progress-label {
   font-family: var(--pixel-font);
-  font-size: 10px;
+  font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
 }
@@ -166,8 +190,19 @@
   box-shadow: 5px 5px 0 var(--shadow), inset 1px 1px 0 rgba(255, 255, 255, 0.45);
 }
 
+/* .board-scale is sized (via inline style, from Game.jsx) to the board's
+   scaled-up display size; .conveyor-stage inside it stays at its native
+   pixel size and is scaled to fill that box with a CSS transform, so
+   every existing pixel-coordinate calculation (targeting-aligned cell
+   centers, the conveyor's offset-path, projectile flight) keeps working
+   in native, unscaled units. */
+.board-scale {
+  position: relative;
+}
+
 .conveyor-stage {
   position: relative;
+  transform-origin: top left;
 }
 
 /* The conveyor belt: four bands tracing the rectangular loop, each with a
@@ -225,8 +260,8 @@
 }
 
 .pixel {
-  width: 7px;
-  height: 7px;
+  width: 9px;
+  height: 9px;
   border-radius: 0;
 }
 
@@ -258,10 +293,10 @@
    with a bright color fill plus tiny ears/face/ammo badge for character. */
 .unit,
 .conveyor-unit {
-  --pig-size: 22px;
+  --pig-size: 28px;
   width: var(--pig-size);
   height: var(--pig-size);
-  border: 2px solid var(--ink);
+  border: 3px solid var(--ink);
   border-radius: 3px;
   position: relative;
   cursor: pointer;
@@ -283,9 +318,9 @@
 
 .unit-ear {
   position: absolute;
-  top: -4px;
-  width: 6px;
-  height: 6px;
+  top: -5px;
+  width: 7px;
+  height: 7px;
   border-radius: 1px;
   background: inherit;
   filter: brightness(0.9);
@@ -309,18 +344,18 @@
 
 .unit-ammo {
   position: absolute;
-  right: -6px;
-  bottom: -6px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 3px;
+  right: -7px;
+  bottom: -7px;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 4px;
   border: 2px solid var(--ink);
   border-radius: 2px;
   background: #2a1a12;
   color: #fff;
   font-family: var(--pixel-font);
-  font-size: 7px;
-  line-height: 13px;
+  font-size: 9px;
+  line-height: 17px;
   text-align: center;
 }
 
@@ -332,12 +367,13 @@
   transition: transform 0.12s ease, opacity 0.12s ease;
 }
 
-/* Shooters on the belt: positioned by offset-path/offset-distance, moved
-   at a constant speed (see Game.jsx, which sets transition-duration per
-   move from real travelled distance) - so only the property/easing are
-   fixed here, never a fixed duration that would make corners look faster
-   or slower than straight sections. A playful bounce-in plays the moment
-   a pig appears, plus a gentle idle wobble while travelling. */
+/* Shooters on the belt: positioned by offset-path/offset-distance, with
+   NO CSS transition on offset-distance - Game.jsx sets that value freshly
+   every animation frame, already interpolated to the exact real-time
+   position (see currentArcLength there), so a CSS transition here would
+   only fight that per-frame value with its own lag. A playful bounce-in
+   plays the moment a pig appears, plus a gentle idle wobble while
+   travelling. */
 .conveyor-unit {
   position: absolute;
   top: 0;
@@ -345,8 +381,6 @@
   z-index: 2;
   offset-rotate: 0deg;
   offset-anchor: 50% 50%;
-  transition-property: offset-distance;
-  transition-timing-function: linear;
   animation: unit-bounce-in 0.28s cubic-bezier(0.34, 1.56, 0.64, 1), unit-wobble 0.6s ease-in-out 0.28s infinite;
 }
 
@@ -414,7 +448,7 @@
 .lane h2 {
   margin: 0 0 6px;
   font-family: var(--pixel-font);
-  font-size: 9px;
+  font-size: 11px;
   letter-spacing: 0.02em;
   color: var(--muted);
 }
@@ -423,20 +457,34 @@
    scannable at a glance without a full list section. */
 .status-row {
   display: flex;
-  gap: 8px;
+  gap: 10px;
 }
 
 .status-chip {
   flex: 1;
   text-align: center;
-  padding: 5px 6px;
-  border: 2px solid var(--ink);
+  padding: 10px 8px;
+  border: 3px solid var(--ink);
   border-radius: 3px;
-  background: var(--bg, #ffe9c9);
+  background: var(--chip-bg, var(--bg, #ffe9c9));
   font-family: var(--pixel-font);
-  font-size: 8px;
+  font-size: 11px;
   color: var(--muted);
-  box-shadow: 2px 2px 0 var(--shadow);
+  box-shadow: 3px 3px 0 var(--shadow);
+}
+
+/* Distinct pastel accent per chip - playful, and a quick visual split
+   between the two counters at a glance. Set as a variable (rather than a
+   plain background override) so active-warning-flash below can animate
+   back to each chip's own resting color instead of a shared fallback.
+   .danger still wins over this when Holding is full, since it sets
+   `background` directly and is declared later in the file. */
+.status-chip.chip-active {
+  --chip-bg: #dff1ff;
+}
+
+.status-chip.chip-holding {
+  --chip-bg: #e3f8e3;
 }
 
 /* Danger/warning state: Holding is full (5/5). This is a warning only -
@@ -448,6 +496,44 @@
   color: #c81f3d;
 }
 
+/* Clicking a pig while Active is already full never disables it (it stays
+   fully clickable, never looking permanently unavailable) - instead this
+   plays once on the Active chip. Re-keyed on every such click (see
+   Game.jsx), so rapid repeated clicks always restart the flash/shake from
+   the top rather than being ignored mid-animation. */
+.status-chip.active-warning {
+  animation: active-warning-flash 0.5s ease;
+}
+
+@keyframes active-warning-flash {
+  0% {
+    background: var(--chip-bg, var(--bg, #ffe9c9));
+    border-color: var(--ink);
+    color: var(--muted);
+    transform: translateX(0);
+  }
+  15% {
+    background: #ffe0e0;
+    border-color: #c81f3d;
+    color: #c81f3d;
+    transform: translateX(-3px);
+  }
+  30% {
+    transform: translateX(3px);
+  }
+  45% {
+    transform: translateX(-2px);
+  }
+  60% {
+    transform: translateX(0);
+  }
+  100% {
+    background: var(--chip-bg, var(--bg, #ffe9c9));
+    border-color: var(--ink);
+    color: var(--muted);
+  }
+}
+
 .holding {
   display: flex;
   flex-wrap: wrap;
@@ -455,6 +541,7 @@
   padding: 5px;
   border: 2px solid transparent;
   border-radius: 4px;
+  background: #eafaf0;
   transition: border-color 0.15s ease, background-color 0.15s ease;
 }
 
@@ -471,13 +558,30 @@
 }
 
 .hold-slot {
-  width: 32px;
-  height: 32px;
-  border: 2px dashed var(--line);
+  width: 40px;
+  height: 40px;
+  border: 3px dashed var(--line);
   border-radius: 3px;
   display: grid;
   place-items: center;
   background: #fffaf0;
+}
+
+/* The 6th, over-capacity slot - only ever rendered for the brief window
+   between a 6th pig failing to find a Holding slot and the Game Over
+   overlay covering it. Bright red/solid (not dashed) so it reads as a
+   hard failure, distinct from the softer 5/5 warning state. */
+.hold-slot-overflow {
+  border: 2px solid #c81f3d;
+  background: #ff5b6e;
+  box-shadow: 0 0 0 2px #ffe0e0, 2px 2px 0 var(--shadow);
+  animation: overflow-flash 0.3s steps(2) 2;
+}
+
+@keyframes overflow-flash {
+  50% {
+    background: #ffe0e0;
+  }
 }
 
 /* Queue: 3 vertical stacks. Only the top pig of each stack is enabled -
@@ -495,16 +599,31 @@
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   align-content: start;
-  gap: 6px;
+  gap: 3px;
   overflow-y: auto;
-  padding-right: 2px;
+  overflow-x: visible;
+  padding: 6px 8px 6px 6px;
+  background: #f3edff;
+  border-radius: 4px;
 }
 
 .queue-column {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
+  gap: 2px;
+}
+
+/* Sized generously around the 22px pig icon (see --pig-size) so its ears
+   and ammo badge - which both extend slightly past the icon's own box -
+   always stay fully visible instead of being clipped by the scrollable
+   .queue-columns/.map-list's overflow. */
+.queue-slot {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  overflow: visible;
 }
 
 /* ---- Left-side map selector ---- */
@@ -525,6 +644,26 @@
   padding: 2px;
 }
 
+/* Scrollable but scrollbar-free (still fully wheel/trackpad-scrollable) -
+   and, only while there's actually more content past the current scroll
+   position (see the `.has-fade` toggle in Game.jsx), a soft bottom fade
+   hints that without shifting size or adding a visible scrollbar. */
+.queue-columns,
+.map-list {
+  scrollbar-width: none;
+}
+
+.queue-columns::-webkit-scrollbar,
+.map-list::-webkit-scrollbar {
+  display: none;
+}
+
+.queue-columns.has-fade,
+.map-list.has-fade {
+  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 22px), transparent);
+  mask-image: linear-gradient(to bottom, black calc(100% - 22px), transparent);
+}
+
 /* Every map is always clickable - grayscale (see .map-thumb-uncleared)
    means "not cleared yet", never "locked". There is no disabled/reduced-
    opacity state here on purpose. */
@@ -532,13 +671,13 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 6px 4px;
-  border: 3px solid var(--ink);
+  gap: 5px;
+  padding: 9px 6px;
+  border: 4px solid var(--ink);
   border-radius: 4px;
   background: #fff;
   cursor: pointer;
-  box-shadow: 2px 2px 0 var(--shadow);
+  box-shadow: 3px 3px 0 var(--shadow);
   transition: transform 0.08s steps(2), box-shadow 0.08s steps(2);
 }
 
@@ -568,7 +707,7 @@
 
 .map-tile-name {
   font-family: var(--pixel-font);
-  font-size: 7px;
+  font-size: 9px;
   color: var(--text);
   text-align: center;
   line-height: 1.4;
@@ -576,12 +715,12 @@
 
 .map-tile-badge {
   font-family: var(--pixel-font);
-  font-size: 6px;
+  font-size: 7px;
   color: #fff;
   background: var(--leaf);
   border: 1px solid var(--ink);
   border-radius: 2px;
-  padding: 2px 4px;
+  padding: 3px 5px;
 }
 
 .overlay {
