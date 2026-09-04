@@ -25,41 +25,15 @@ import {
 } from './conveyor'
 import { colorBalance, countPixels, createInitialState, dispatchUnit, reactivateHoldingUnit, tick } from './logic'
 
-// The outward-facing direction for each side, used to spread overlapping
-// shooters apart WITHOUT ever moving them along the belt (which would
-// change their arc-length position and desync it from the aligned
-// row/column that targeting - and the projectiles they fire - actually use).
-const PERP_NORMALS = {
-  bottom: { x: 0, y: 1 },
-  top: { x: 0, y: -1 },
-  right: { x: 1, y: 0 },
-  left: { x: -1, y: 0 },
-}
-
-const PERP_GAP = 8
-
-// Up to ACTIVE_CAPACITY shooters can be on the belt at once, so they need
-// that many distinct sideways nudges - keyed by each unit's own `lane`
-// (assigned in logic.js: the lowest lane index not already used by
-// another currently-active unit, so no two simultaneously-active units
-// can ever collide). Lane 0 always renders perfectly centered on the belt
-// (zero offset) - only lane 1+ nudge sideways at all, and always by a
-// positive multiple of PERP_GAP, i.e. only ever further OUTWARD along the
-// side's own outward normal (see PERP_NORMALS), never back in toward the
-// board. Since a unit's lane is fixed for its whole run (assigned once in
-// logic.js, never reassigned tick-to-tick), this offset can't grow over
-// time either - it's a pure function of that one fixed integer. The SAME
-// lane value renders both a unit's own token and the origin of any
-// projectile it fires, so the two can never disagree.
-function perpOffsetForLane(lane) {
-  return lane * PERP_GAP
-}
-
-function perpOffsetXY(side, lane) {
-  const normal = PERP_NORMALS[side]
-  const perp = perpOffsetForLane(lane)
-  return { dx: normal.x * perp, dy: normal.y * perp }
-}
+// Every active shooter renders exactly on the belt's own centerline, corners
+// included - offset-anchor is always dead center (50% 50%), never nudged
+// sideways. logic.js still assigns each unit a `lane` (see assignLane there)
+// so no two simultaneously-active units are ever the *same* logical slot,
+// but rendering no longer turns that into a spatial offset: overlapping
+// shooters simply render stacked on the centerline rather than being pushed
+// apart, since any positional nudge - inward or outward - would move them
+// off the true conveyor path. Targeting is untouched either way; it only
+// ever depends on unit.step, never on lane or any rendered position.
 
 // A shooter's exact belt position, interpolated every render frame from
 // the same real-time progress logic.js uses to gate scanning
@@ -453,14 +427,13 @@ export default function Game() {
               other to move. offsetDistance is interpolated every frame
               (see currentArcLength) from unit.step/elapsedMs, the same
               real-time progress targeting uses, so the visible glide is
-              continuous and never tied to a per-step CSS transition -
-              overlap between pigs sharing a step is resolved with a
-              perpendicular offset-anchor nudge only, which never changes
-              that arc-length/step position. */}
+              continuous and never tied to a per-step CSS transition. Every
+              shooter's offset-anchor stays dead center on the path even
+              when several units share a step - they render stacked exactly
+              on the centerline rather than spread apart. */}
           {state.path.map((unit) => {
             const step = CONVEYOR_PATH[unit.step]
             const distance = currentArcLength(unit)
-            const { dx, dy } = perpOffsetXY(step.side, unit.lane)
             return (
               <div
                 // Keyed by unit id so a *different* unit taking over a
@@ -472,7 +445,7 @@ export default function Game() {
                   background: level.colors[unit.color],
                   offsetPath: LOOP_PATH,
                   offsetDistance: `${distance}px`,
-                  offsetAnchor: `calc(50% - ${dx}px) calc(50% - ${dy}px)`,
+                  offsetAnchor: '50% 50%',
                 }}
                 aria-label={`${unit.color} pig, ${unit.ammo} ammo`}
               >
@@ -485,13 +458,11 @@ export default function Game() {
           })}
 
           {state.shots.map((shot) => {
-            // Same per-unit perpendicular nudge as the shooter's own
-            // token, applied to the same frozen firing step - so a
-            // projectile always starts exactly where its shooter is
-            // actually rendered, never from the unshifted/raw position.
-            const base = stepPosition(shot.from)
-            const { dx, dy } = perpOffsetXY(shot.from.side, shot.lane)
-            const from = { x: base.x + dx, y: base.y + dy }
+            // The shooter itself always renders exactly on the belt
+            // centerline now (see above), so its projectile's origin is
+            // just that step's raw centerline position - no per-unit
+            // adjustment needed to match where the shooter actually is.
+            const from = stepPosition(shot.from)
             const to = cellCenter(shot.to.row, shot.to.col)
             return (
               <div
